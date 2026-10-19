@@ -1,7 +1,7 @@
 // Permite abrir la app sin internet. Primero intenta la red (para recibir
 // actualizaciones) y, si no hay conexión, usa la copia guardada.
 // Tus datos NO pasan por aquí: viven en el almacenamiento del navegador.
-const CACHE = 'habitos-v5';
+const CACHE = 'habitos-v9';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {

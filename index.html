@@ -153,6 +153,12 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:0}
 .cat-h span:last-child{color:var(--muted);font-weight:600;font-size:13px}
 .quick{display:flex;gap:8px;flex-wrap:wrap}
 .quick button{padding:9px 13px;border-radius:99px;background:var(--surface2);border:1px solid var(--line);font-size:14px;font-weight:550}
+.qday{margin:-2px 4px 16px;padding-left:12px;border-left:3px solid var(--accent)}
+.qday q{display:block;quotes:"“" "”";font-style:italic;font-size:15px;line-height:1.45}
+.qday cite{display:block;font-style:normal;color:var(--muted);font-size:12px;margin-top:4px}
+.neg .hl b{color:var(--warn-ink)}
+.neg q{display:block;quotes:"“" "”";font-style:italic;font-size:14px;margin-top:4px;line-height:1.45}
+.neg cite{display:block;font-style:normal;color:var(--muted);font-size:12px;margin-top:2px}
 .goal-ok{color:var(--accent);font-weight:650}
 .mini-btn{margin-top:8px;padding:6px 11px;border-radius:99px;font-size:13px;font-weight:620;background:var(--accent-soft);color:var(--accent)}
 .row.done .mini-btn{background:var(--surface);color:var(--muted)}
@@ -288,7 +294,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const $ = (s) => document.querySelector(s);
 const DOW = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 const MAX_AHEAD = 30; // días hacia adelante que puedes consultar
-const pctTxt = (x) => (x == null ? '—' : Math.round(x * 100) + '%');
+const pctTxt = (x) => (x == null ? '—' : (x < 1 ? Math.min(99, Math.round(x * 100)) : Math.round(x * 100)) + '%'); // nunca muestra 100% si no llegaste
 
 /* ---------- Datos: viven solo en este dispositivo ---------- */
 function cleanCat(c) {
@@ -318,6 +324,7 @@ function normalize(s) {
       createdAt: isDate(h.createdAt) ? h.createdAt : todayStr(),
       endDate: isDate(h.endDate) ? h.endDate : null,
       category: cleanCat(h.category),
+      why: String(h.why || '').trim().slice(0, 120),
     };
   });
   const logs = {};
@@ -336,7 +343,7 @@ function normalize(s) {
     if (Object.keys(o).length) accepted[d] = o;
   }
   const m = s.meta || {};
-  return { version: 1, habits, logs, accepted, meta: { created: isDate(m.created) ? m.created : todayStr(), lastBackup: isDate(m.lastBackup) ? m.lastBackup : null } };
+  return { version: 1, habits, logs, accepted, meta: { created: isDate(m.created) ? m.created : todayStr(), lastBackup: isDate(m.lastBackup) ? m.lastBackup : null, snooze: isDate(m.snooze) ? m.snooze : null } };
 }
 
 function load() {
@@ -393,15 +400,25 @@ function rangeDays(a, b) { const out = []; for (let d = a; d <= b; d = addDays(d
 
 // mode 'week': meta semanal completa. mode 'month': meta proporcional a los días transcurridos.
 function habitRange(h, start, end, mode) {
-  const days = rangeDays(start, end).filter((d) => due(h, d));
+  let days = rangeDays(start, end).filter((d) => due(h, d));
   const done = days.filter((d) => isDone(h, d)).length;
+  if (h.type === 'amount') {
+    // En los resúmenes, los hábitos de cantidad se miden por volumen real contra el objetivo.
+    // Hoy solo cuenta cuando ya capturaste algo (el día todavía no termina).
+    const t = todayStr();
+    days = days.filter((d) => d !== t || val(d, h.id) > 0);
+    const vol = days.reduce((a, d) => a + val(d, h.id), 0), volGoal = h.target * days.length;
+    const met = days.filter((d) => val(d, h.id) >= h.target).length;
+    const credit = volGoal ? Math.min(1, vol / volGoal) * days.length : 0;
+    return { done: met, goal: days.length, days, vol, volGoal, credit };
+  }
   if (h.freq !== 'weekly') return { done, goal: days.length, days };
   const goal = mode === 'week' ? h.weeklyTarget : Math.max(days.length ? 1 : 0, Math.round(h.weeklyTarget * days.length / 7));
   return { done, goal, days };
 }
 function overall(rs) {
   const goal = rs.reduce((a, r) => a + r.goal, 0);
-  const got = rs.reduce((a, r) => a + Math.min(r.done, r.goal), 0);
+  const got = rs.reduce((a, r) => a + (r.credit != null ? r.credit : Math.min(r.done, r.goal)), 0);
   return goal ? got / goal : null;
 }
 function streak(h) {
@@ -440,7 +457,7 @@ function catCard(rs) {
   const m = new Map();
   for (const r of rs) {
     const c = catOf(r.h), o = m.get(c) || { goal: 0, got: 0, done: 0 };
-    o.goal += r.goal; o.got += Math.min(r.done, r.goal); o.done += r.done; m.set(c, o);
+    o.goal += r.goal; o.got += r.credit != null ? r.credit : Math.min(r.done, r.goal); o.done += r.done; m.set(c, o);
   }
   const total = [...m.values()].reduce((a, o) => a + o.done, 0);
   const rows = [...m.entries()].sort((a, b) => b[1].done - a[1].done).map(([c, o]) => {
@@ -453,6 +470,17 @@ function catCard(rs) {
 }
 function habitStatRow(r, withStreak) {
   const { h, done, goal, days } = r;
+  if (h.type === 'amount') {
+    const real = r.volGoal ? r.vol / r.volGoal : null, p = real == null ? 0 : Math.min(real >= 1 ? 100 : 99, Math.round(real * 100));
+    const u = esc(h.unit), avg = days.length ? Math.round(r.vol / days.length) : 0;
+    const lines = [
+      `${nf(r.vol)} de ${nf(r.volGoal)} ${u} · promedio ${nf(avg)}/día`,
+      `${done} de ${goal} ${goal === 1 ? 'día' : 'días'} en meta (${nf(h.target)}+)`,
+    ];
+    if (withStreak) { const s = streak(h); lines.push(`🔥 Racha actual: ${s.cur} ${s.cur === 1 ? s.unit.slice(0, -1) : s.unit} · Mejor: ${s.best}`); }
+    return `<div class="hrow"><div class="hl"><span>${esc(h.emoji || '•')} ${esc(h.name)}</span><b class="num">${pctTxt(real)}</b></div><div class="bar sm"><i style="width:${p}%"></i></div>
+      ${lines.map((l) => `<div class="streak">${l}</div>`).join('')}</div>`;
+  }
   const p = goal ? Math.min(100, Math.round((Math.min(done, goal) / goal) * 100)) : 0;
   const lines = [];
   if (h.type !== 'check' && days.length) {
@@ -474,6 +502,99 @@ const view = $('#view');
 const t0 = todayStr();
 const ui = { tab: 'hoy', day: t0, week: weekStart(t0), month: monthStart(t0), year: t0.slice(0, 4), period: 'week', flash: null, lastToday: t0 };
 
+
+/* ---------- Recordatorios de hábitos descuidados ---------- */
+// Solo frases con fuente verificable.
+const QUOTES = {
+  lectura: [
+    ['Si tienes un jardín y una biblioteca, tienes todo lo que necesitas.', 'Cicerón, Cartas a sus amigos'],
+    ['Mientras enseñamos, aprendemos.', 'Séneca, Cartas a Lucilio'],
+    ['La lectura hace al hombre completo; la conversación, ágil; y la escritura, preciso.', 'Francis Bacon, Ensayos'],
+  ],
+  movimiento: [
+    ['Un viaje de mil millas comienza con un solo paso.', 'Lao-Tsé, Tao Te Ching'],
+    ['Mente sana en cuerpo sano.', 'Juvenal, Sátiras'],
+    ['La gota horada la piedra no por su fuerza, sino por su constancia.', 'Ovidio (adaptado), Cartas desde el Ponto'],
+  ],
+  salud: [
+    ['Mente sana en cuerpo sano.', 'Juvenal, Sátiras'],
+    ['La gota horada la piedra no por su fuerza, sino por su constancia.', 'Ovidio (adaptado), Cartas desde el Ponto'],
+    ['No es que tengamos poco tiempo, sino que perdemos mucho.', 'Séneca, Sobre la brevedad de la vida'],
+  ],
+  aprendizaje: [
+    ['Mientras enseñamos, aprendemos.', 'Séneca, Cartas a Lucilio'],
+    ['Un viaje de mil millas comienza con un solo paso.', 'Lao-Tsé, Tao Te Ching'],
+    ['La lectura hace al hombre completo; la conversación, ágil; y la escritura, preciso.', 'Francis Bacon, Ensayos'],
+  ],
+  finanzas: [
+    ['Cuidado con los pequeños gastos: una pequeña fuga hunde un gran barco.', 'Benjamin Franklin, El camino a la riqueza'],
+    ['La gota horada la piedra no por su fuerza, sino por su constancia.', 'Ovidio (adaptado), Cartas desde el Ponto'],
+  ],
+  general: [
+    ['Mientras se aplaza, la vida pasa.', 'Séneca, Cartas a Lucilio'],
+    ['No es que tengamos poco tiempo, sino que perdemos mucho.', 'Séneca, Sobre la brevedad de la vida'],
+    ['Somos lo que hacemos repetidamente. La excelencia, entonces, no es un acto sino un hábito.', 'Will Durant, resumiendo a Aristóteles'],
+    ['Un viaje de mil millas comienza con un solo paso.', 'Lao-Tsé, Tao Te Ching'],
+  ],
+};
+const TOPICS = [
+  ['lectura', /(le[eí]r|lectura|libro|p[aá]ginas)/],
+  ['movimiento', /(gym|gimnasio|camin|pasos|correr|corr[ií]|ejercicio|entren|bici|nadar|pesas|yoga|cardio|padel|p[aá]del)/],
+  ['finanzas', /(finanz|dinero|ahorr|gasto|presupuesto|inver)/],
+  ['aprendizaje', /(aprend|estudi|curso|idioma|ingl[eé]s|gre|clase|educaci)/],
+  ['salud', /(salud|agua|vinagre|comida|comer|dormir|sue[nñ]o|medit|vitamin|dieta)/],
+];
+function topicOf(h) {
+  const txt = `${h.category} ${h.name}`.toLowerCase();
+  for (const [k, re] of TOPICS) if (re.test(txt)) return k;
+  return 'general';
+}
+function quoteFor(h, d) {
+  const list = QUOTES[topicOf(h)];
+  let x = 0; for (const c of h.id + d) x = (x * 31 + c.charCodeAt(0)) >>> 0;
+  return list[x % list.length];
+}
+const progressOn = (h, d) => (h.type === 'check' ? isDone(h, d) : val(d, h.id) > 0);
+function neglectOf(h) {
+  const t = todayStr();
+  if (!active(h, t) || ended(h)) return null;
+  let last = null, missed = 0;
+  for (let d = addDays(t, -1); d >= h.createdAt; d = addDays(d, -1)) {
+    if (!scheduled(h, d)) continue;
+    if (progressOn(h, d)) { last = d; break; }
+    missed++;
+  }
+  const since = last || addDays(h.createdAt, -1);
+  const gap = daysBetween(since, t) - 1; // días completos sin hacerlo, sin contar hoy
+  const limit = h.freq === 'weekly' ? 7 : h.freq === 'days' ? null : 3;
+  const hit = h.freq === 'days' ? missed >= 2 : gap >= limit;
+  return hit ? { h, gap, missed, never: !last } : null;
+}
+function gapTxt(n) {
+  if (n >= 14) { const w = Math.floor(n / 7); return `${w} semanas`; }
+  if (n >= 7) return '1 semana';
+  return `${n} días`;
+}
+function dayQuote() {
+  // Una frase por día, igual para todo el día.
+  const all = [...new Map(Object.values(QUOTES).flat().map((q) => [q[0], q])).values()];
+  const t = todayStr(); let x = 0; for (const c of t) x = (x * 31 + c.charCodeAt(0)) >>> 0;
+  const [q, a] = all[x % all.length];
+  return `<div class="qday"><q>${esc(q)}</q><cite>— ${esc(a)}</cite></div>`;
+}
+function neglectCard() {
+  const t = todayStr();
+  const list = state.habits.map(neglectOf).filter(Boolean).sort((a, b) => b.gap - a.gap);
+  if (!list.length) return '';
+  const rows = list.map(({ h, gap, missed, never }) => {
+    const status = never ? 'sin empezar' : h.freq === 'days' ? `${missed} veces seguidas` : gapTxt(gap);
+    let body;
+    if (h.why) body = `<div class="streak">Tu motivo: ${esc(h.why)}</div>`;
+    else { const [q, a] = quoteFor(h, t); body = `<q>${esc(q)}</q><cite>— ${esc(a)}</cite>`; }
+    return `<div class="hrow"><div class="hl"><span>${esc(h.emoji || '•')} ${esc(h.name)}</span><b>${status}</b></div>${body}</div>`;
+  }).join('');
+  return `<h3 class="sec">Hábitos descuidados</h3><section class="card neg">${rows}</section>`;
+}
 
 function banner() {
   const n = backupDue();
@@ -549,7 +670,7 @@ function renderHoy() {
   else if (st.done === st.total) msg = isToday ? 'Día completo. Bien hecho. 🎉' : 'Día completo.';
   else if (st.done === 0) msg = `${st.total} hábitos por hacer.`;
   else msg = `Te ${st.total - st.done === 1 ? 'falta 1' : 'faltan ' + (st.total - st.done)}.`;
-  let html = head + (future ? '' : banner());
+  let html = head + (future ? '' : banner() + (isToday ? dayQuote() : ''));
   if (future) {
     html += `<p class="future-note">Este día aún no llega. Esto es lo que te toca.</p>`;
     if (dh.length) html += listHTML(dh, d);
@@ -825,7 +946,7 @@ form.addEventListener('submit', (e) => {
     type: freq !== 'weekly' && ['count', 'amount'].includes(F.type.value) ? F.type.value : 'check',
     target: Math.max(1, parseInt(F.target.value, 10) || 1), unit: F.unit.value.trim() || 'veces',
     weeklyTarget: Math.min(7, Math.max(1, parseInt(F.weeklyTarget.value, 10) || 1)), createdAt: since,
-    endDate, category: cleanCat(F.category.value),
+    endDate, category: cleanCat(F.category.value), why: (form.dataset.id && (state.habits.find((x) => x.id === form.dataset.id) || {}).why) || '',
   };
   const id = form.dataset.id;
   if (id) Object.assign(state.habits.find((x) => x.id === id), data);
