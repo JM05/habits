@@ -154,6 +154,14 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:0}
 .quick{display:flex;gap:8px;flex-wrap:wrap}
 .quick button{padding:9px 13px;border-radius:99px;background:var(--surface2);border:1px solid var(--line);font-size:14px;font-weight:550}
 .goal-ok{color:var(--accent);font-weight:650}
+.mini-btn{margin-top:8px;padding:6px 11px;border-radius:99px;font-size:13px;font-weight:620;background:var(--accent-soft);color:var(--accent)}
+.row.done .mini-btn{background:var(--surface);color:var(--muted)}
+.amt-wrap{display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0}
+.sec.done-h{margin-top:28px}
+#confirmDlg p{color:var(--muted);font-size:15px;margin:6px 0 2px}
+#confirmDlg .actions{grid-template-columns:1fr}
+@keyframes pop{0%{transform:scale(.98);opacity:.6}100%{transform:none;opacity:1}}
+.row.just{animation:pop .3s ease}
 .future-note{color:var(--muted);font-size:14px;text-align:center;margin:-4px 0 12px}
 .row.locked{opacity:.55}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:20px}
@@ -169,8 +177,7 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:0}
 
 <nav class="tabbar" aria-label="Secciones"><div>
   <button data-tab="hoy"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.8 2.8L16.5 9.5"/></svg>Hoy</button>
-  <button data-tab="semana"><svg viewBox="0 0 24 24"><path d="M5 20V12M10 20V6M15 20v-9M20 20V9"/></svg>Semana</button>
-  <button data-tab="mes"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>Mes</button>
+  <button data-tab="resumen"><svg viewBox="0 0 24 24"><path d="M5 20V12M10 20V6M15 20v-9M20 20V9"/></svg>Resumen</button>
   <button data-tab="habitos"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>Hábitos</button>
   <button data-tab="respaldo"><svg viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5"/><path d="M4.5 16v2.5a1.5 1.5 0 001.5 1.5h12a1.5 1.5 0 001.5-1.5V16"/></svg>Respaldo</button>
 </div></nav>
@@ -248,6 +255,14 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:0}
 </dialog>
 
 <input type="file" id="importFile" accept="application/json,.json" hidden>
+<dialog id="confirmDlg">
+  <h2 id="cTitle">¿Lo das por hecho?</h2>
+  <p id="cMsg"></p>
+  <div class="actions">
+    <button type="button" class="btn" id="cYes">Sí, darlo por hecho</button>
+    <button type="button" class="btn ghost" id="cNo">Todavía no, voy a sumar más</button>
+  </div>
+</dialog>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -282,7 +297,7 @@ function cleanCat(c) {
 }
 const DEFAULT_CATS = ['Salud', 'Mente', 'Educación', 'Trabajo', 'Finanzas', 'Casa', 'Familia'];
 const KEY = 'habitos.v1';
-const blank = () => ({ version: 1, habits: [], logs: {}, meta: { created: todayStr(), lastBackup: null } });
+const blank = () => ({ version: 1, habits: [], logs: {}, accepted: {}, meta: { created: todayStr(), lastBackup: null } });
 
 function normalize(s) {
   if (!s || !Array.isArray(s.habits) || typeof s.logs !== 'object' || s.logs === null) return null;
@@ -312,8 +327,16 @@ function normalize(s) {
     for (const [id, n] of Object.entries(v)) { const x = Math.round(Number(n)); if (x > 0) o[id] = x; }
     if (Object.keys(o).length) logs[d] = o;
   }
+  // Días en que diste por hecho un hábito aunque no llegaste exactamente a la meta.
+  const accepted = {};
+  for (const [d, v] of Object.entries(s.accepted || {})) {
+    if (!isDate(d) || !v || typeof v !== 'object') continue;
+    const o = {};
+    for (const id of Object.keys(v)) if (v[id]) o[id] = 1;
+    if (Object.keys(o).length) accepted[d] = o;
+  }
   const m = s.meta || {};
-  return { version: 1, habits, logs, meta: { created: isDate(m.created) ? m.created : todayStr(), lastBackup: isDate(m.lastBackup) ? m.lastBackup : null } };
+  return { version: 1, habits, logs, accepted, meta: { created: isDate(m.created) ? m.created : todayStr(), lastBackup: isDate(m.lastBackup) ? m.lastBackup : null } };
 }
 
 function load() {
@@ -334,7 +357,8 @@ const inRange = (h, a, b) => h.createdAt <= b && (!h.endDate || h.endDate >= a);
 const catOf = (h) => h.category || 'Sin categoría';
 const usesCats = () => state.habits.some((h) => h.category);
 const val = (d, id) => (state.logs[d] && state.logs[d][id]) || 0;
-const isDone = (h, d) => (h.type !== 'check' ? val(d, h.id) >= h.target : val(d, h.id) >= 1);
+const acc = (d, id) => !!(state.accepted[d] && state.accepted[d][id]);
+const isDone = (h, d) => (h.type !== 'check' ? val(d, h.id) >= h.target || (val(d, h.id) > 0 && acc(d, h.id)) : val(d, h.id) >= 1);
 const nf = (n) => Number(n).toLocaleString('es-MX');
 const dow = (d) => (pd(d).getDay() + 6) % 7; // 0 = lunes … 6 = domingo
 const scheduled = (h, d) => h.freq !== 'days' || h.days.includes(dow(d));
@@ -343,6 +367,12 @@ const daily = () => state.habits.filter((h) => h.freq !== 'weekly');
 const DAYNAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
 const weekly = () => state.habits.filter((h) => h.freq === 'weekly');
 
+function setAccepted(d, id, on) {
+  if (!state.accepted[d]) state.accepted[d] = {};
+  if (on) state.accepted[d][id] = 1; else delete state.accepted[d][id];
+  if (!Object.keys(state.accepted[d]).length) delete state.accepted[d];
+  save();
+}
 function setVal(d, id, v) {
   if (!state.logs[d]) state.logs[d] = {};
   if (v <= 0) delete state.logs[d][id]; else state.logs[d][id] = v;
@@ -442,7 +472,7 @@ function backupDue() {
 /* ---------- Interfaz ---------- */
 const view = $('#view');
 const t0 = todayStr();
-const ui = { tab: 'hoy', day: t0, week: weekStart(t0), month: monthStart(t0), year: t0.slice(0, 4), period: 'month', lastToday: t0 };
+const ui = { tab: 'hoy', day: t0, week: weekStart(t0), month: monthStart(t0), year: t0.slice(0, 4), period: 'week', flash: null, lastToday: t0 };
 
 
 function banner() {
@@ -452,27 +482,36 @@ function banner() {
   return `<div class="banner"><span>💾 ${msg}</span><button data-a="export">Respaldar</button></div>`;
 }
 
-function amountTxt(h, v) {
+function amountTxt(h, v, d) {
   const u = esc(h.unit), goal = `Meta ${nf(h.target)} ${u}`;
   if (!v) return goal;
+  if (v < h.target && acc(d, h.id)) return `${goal} · Real ${nf(v)} <span class="goal-ok">✓ dado por hecho</span>`;
   if (v >= h.target) return `${goal} · Real ${nf(v)} <span class="goal-ok">✓ ${v > h.target ? '+' + nf(v - h.target) : 'exacto'}</span>`;
   return `${goal} · Real ${nf(v)} · faltan ${nf(h.target - v)}`;
 }
-function listHTML(hs, d) {
+function listHTML(hs, d, all) {
+  if (!hs.length) return '';
   if (!usesCats()) return `<ul class="list">${hs.map((h) => rowHabit(h, d)).join('')}</ul>`;
   const g = new Map();
   hs.forEach((h) => { const c = catOf(h); if (!g.has(c)) g.set(c, []); g.get(c).push(h); });
   return [...g.entries()].map(([c, arr]) => {
-    const dn = arr.filter((h) => isDone(h, d)).length;
-    return `<h3 class="sec cat-h"><span>#${esc(c)}</span><span>${dn}/${arr.length}</span></h3><ul class="list">${arr.map((h) => rowHabit(h, d)).join('')}</ul>`;
+    const inCat = (all || arr).filter((h) => catOf(h) === c);
+    const dn = inCat.filter((h) => isDone(h, d)).length;
+    return `<h3 class="sec cat-h"><span>#${esc(c)}</span><span>${dn}/${inCat.length}</span></h3><ul class="list">${arr.map((h) => rowHabit(h, d)).join('')}</ul>`;
   }).join('');
+}
+function partialBtn(h, v, d) {
+  if (d > todayStr() || !v || v >= h.target) return '';
+  return acc(d, h.id)
+    ? `<button class="mini-btn" data-a="unaccept" data-id="${h.id}">Deshacer</button>`
+    : `<button class="mini-btn" data-a="accept" data-id="${h.id}">✓ Dar por hecho</button>`;
 }
 function rowHabit(h, d) {
   const v = val(d, h.id), done = isDone(h, d), e = esc(h.emoji || '•'), n = esc(h.name);
   if (h.type === 'amount') {
     const p = Math.min(100, Math.round((v / h.target) * 100));
     return `<li class="row ${done ? 'done' : ''}"><span class="emo">${e}</span>
-      <div class="txt"><b>${n}</b><small class="num">${amountTxt(h, v)}</small><div class="bar sm"><i style="width:${p}%"></i></div></div>
+      <div class="txt"><b>${n}</b><small class="num">${amountTxt(h, v, d)}</small><div class="bar sm"><i style="width:${p}%"></i></div>${partialBtn(h, v, d)}</div>
       <input class="amt num" type="number" inputmode="numeric" min="0" step="1" data-id="${h.id}" value="${v || ''}" placeholder="0" aria-label="${n}: cantidad de hoy" ${d > todayStr() ? 'disabled' : ''}></li>`;
   }
   if (h.type === 'count') {
@@ -520,10 +559,14 @@ function renderHoy() {
     return;
   }
   if (st.total) html += `<section class="card progress"><div class="big num">${st.done}<small>/${st.total}</small></div><div class="pct num">${p}%</div><div class="bar"><i style="width:${p}%"></i></div><p>${msg}</p></section>`;
-  if (dh.length) html += listHTML(dh, d);
-  if (wh.length) html += `<h3 class="sec">Meta semanal</h3><ul class="list">${wh.map((h) => rowHabit(h, d)).join('')}</ul>`;
+  const pend = dh.filter((h) => !isDone(h, d)), wpend = wh.filter((h) => !isDone(h, d));
+  const doneList = [...dh, ...wh].filter((h) => isDone(h, d));
+  html += listHTML(pend, d, dh);
+  if (wpend.length) html += `<h3 class="sec">Meta semanal</h3><ul class="list">${wpend.map((h) => rowHabit(h, d)).join('')}</ul>`;
+  if (doneList.length) html += `<h3 class="sec done-h">Completados · ${doneList.length}</h3><ul class="list">${doneList.map((h) => rowHabit(h, d)).join('')}</ul>`;
   if (!dh.length && !wh.length) html += `<div class="card empty"><p>No tienes hábitos programados para este día.</p></div>`;
   view.innerHTML = html;
+  if (ui.flash) { const el = view.querySelector(`[data-id="${ui.flash}"]`); const row = el && el.closest('.row'); if (row) row.classList.add('just'); ui.flash = null; }
 }
 
 function renderSemana() {
@@ -542,7 +585,7 @@ function renderSemana() {
   const perfect = past.filter((x) => x.done === x.total).length;
   const best = past.length ? past.reduce((a, b) => (b.pct > a.pct ? b : a)) : null;
   let html = `<div class="top"><div><h1>Semana</h1><p class="sub">${ws === cur ? 'Esta semana · ' : ''}${label}</p></div>
-    <div class="nav"><button class="icon-btn" data-a="prevWeek" aria-label="Semana anterior">‹</button><button class="icon-btn" data-a="nextWeek" aria-label="Semana siguiente" ${ws >= cur ? 'disabled' : ''}>›</button></div></div>`;
+    <div class="nav"><button class="icon-btn" data-a="prevWeek" aria-label="Semana anterior">‹</button><button class="icon-btn" data-a="nextWeek" aria-label="Semana siguiente" ${ws >= cur ? 'disabled' : ''}>›</button></div></div>` + seg();
   if (!hs.length) { view.innerHTML = html + `<div class="card empty"><p>No hay hábitos en esta semana.</p></div>`; return; }
   html += `<div class="stats"><div class="stat"><b class="num">${pctTxt(ov)}</b><small>Progreso de la semana</small></div>
     <div class="stat"><b class="num">${perfect}</b><small>Días completos</small></div>
@@ -562,9 +605,13 @@ function lvl(st) {
   return 'l4';
 }
 
-const seg = () => `<div class="seg"><button data-a="period" data-p="month" class="${ui.period === 'month' ? 'on' : ''}">Mes</button><button data-a="period" data-p="year" class="${ui.period === 'year' ? 'on' : ''}">Año</button></div>`;
-function renderMes() {
+const seg = () => `<div class="seg">${[['week', 'Semana'], ['month', 'Mes'], ['year', 'Año']].map(([k, l]) => `<button data-a="period" data-p="${k}" class="${ui.period === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+function renderResumen() {
   if (ui.period === 'year') return renderAnio();
+  if (ui.period === 'week') return renderSemana();
+  return renderMes();
+}
+function renderMes() {
   const t = todayStr(), ms = ui.month, n = daysInMonth(ms), me = ms.slice(0, 8) + pad(n), end = me < t ? me : t, cur = monthStart(t);
   let html = `<div class="top"><div><h1>${cap(fmt(ms, { month: 'long' }))}</h1><p class="sub">${fmt(ms, { year: 'numeric' })}</p></div>
     <div class="nav"><button class="icon-btn" data-a="prevMonth" aria-label="Mes anterior">‹</button><button class="icon-btn" data-a="nextMonth" aria-label="Mes siguiente" ${ms >= cur ? 'disabled' : ''}>›</button></div></div>` + seg();
@@ -662,7 +709,7 @@ function renderRespaldo() {
 
 function render() {
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
-  ({ hoy: renderHoy, semana: renderSemana, mes: renderMes, habitos: renderHabitos, respaldo: renderRespaldo })[ui.tab]();
+  ({ hoy: renderHoy, resumen: renderResumen, habitos: renderHabitos, respaldo: renderRespaldo })[ui.tab]();
 }
 
 /* ---------- Acciones ---------- */
@@ -792,6 +839,7 @@ $('#fDelete').addEventListener('click', () => {
   if (!h || !confirm(`¿Eliminar "${h.name}" y todo su historial?`)) return;
   state.habits = state.habits.filter((x) => x.id !== id);
   for (const d of Object.keys(state.logs)) { delete state.logs[d][id]; if (!Object.keys(state.logs[d]).length) delete state.logs[d]; }
+  for (const d of Object.keys(state.accepted)) { delete state.accepted[d][id]; if (!Object.keys(state.accepted[d]).length) delete state.accepted[d]; }
   save(); dlg.close(); render(); toast('Hábito eliminado');
 });
 
@@ -802,19 +850,21 @@ document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-a]');
   if (!el || el.disabled) return;
   const id = el.dataset.id, h = id ? state.habits.find((x) => x.id === id) : null;
-  if (['toggle', 'inc', 'dec'].includes(el.dataset.a) && ui.day > todayStr()) { toast('Podrás marcarlo cuando llegue ese día'); return; }
+  if (['toggle', 'inc', 'dec', 'accept', 'unaccept'].includes(el.dataset.a) && ui.day > todayStr()) { toast('Podrás marcarlo cuando llegue ese día'); return; }
   switch (el.dataset.a) {
     case 'prevDay': ui.day = addDays(ui.day, -1); break;
     case 'nextDay': if (ui.day < addDays(todayStr(), MAX_AHEAD)) ui.day = addDays(ui.day, 1); break;
     case 'toToday': ui.day = todayStr(); break;
-    case 'toggle': if (h) setVal(ui.day, h.id, isDone(h, ui.day) ? 0 : 1); break;
-    case 'inc': if (h) setVal(ui.day, h.id, val(ui.day, h.id) + 1); break;
+    case 'toggle': if (h) { setVal(ui.day, h.id, isDone(h, ui.day) ? 0 : 1); ui.flash = h.id; } break;
+    case 'inc': if (h) { setVal(ui.day, h.id, val(ui.day, h.id) + 1); ui.flash = h.id; } break;
     case 'dec': if (h) setVal(ui.day, h.id, val(ui.day, h.id) - 1); break;
     case 'prevWeek': ui.week = addDays(ui.week, -7); break;
     case 'nextWeek': if (ui.week < weekStart(todayStr())) ui.week = addDays(ui.week, 7); break;
     case 'prevMonth': ui.month = shiftMonth(ui.month, -1); break;
     case 'nextMonth': if (ui.month < monthStart(todayStr())) ui.month = shiftMonth(ui.month, 1); break;
-    case 'period': ui.period = el.dataset.p === 'year' ? 'year' : 'month'; break;
+    case 'period': ui.period = ['week', 'month', 'year'].includes(el.dataset.p) ? el.dataset.p : 'week'; break;
+    case 'accept': if (h) { setAccepted(ui.day, h.id, true); ui.flash = h.id; toast('Dado por hecho'); } break;
+    case 'unaccept': if (h) setAccepted(ui.day, h.id, false); break;
     case 'prevYear': ui.year = String(Number(ui.year) - 1); break;
     case 'nextYear': if (ui.year < todayStr().slice(0, 4)) ui.year = String(Number(ui.year) + 1); break;
     case 'goMonth': if (isDate(el.dataset.m)) { ui.month = el.dataset.m; ui.period = 'month'; window.scrollTo(0, 0); } break;
@@ -835,12 +885,31 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (!el.classList || !el.classList.contains('amt') || ui.day > todayStr()) return;
-  const n = Math.max(0, Math.round(Number(el.value) || 0));
-  setVal(ui.day, el.dataset.id, n);
+  const n = Math.max(0, Math.round(Number(el.value) || 0)), id = el.dataset.id, d = ui.day;
+  const h = state.habits.find((x) => x.id === id);
+  if (!h) return;
+  setVal(d, id, n);
+  setAccepted(d, id, false);
+  ui.flash = id;
   render();
+  if (n > 0 && n < h.target) setTimeout(() => askAccept(h, n, d), 60);
 });
+const cDlg = $('#confirmDlg');
+let pendingAccept = null;
+function askAccept(h, n, d) {
+  pendingAccept = { id: h.id, d };
+  $('#cTitle').textContent = `¿Das por hecho "${h.name}"?`;
+  $('#cMsg').textContent = `Registraste ${nf(n)} de ${nf(h.target)} ${h.unit} (faltan ${nf(h.target - n)}). Puedes darlo por hecho hoy o dejarlo pendiente si todavía vas a sumar más.`;
+  cDlg.showModal();
+}
+$('#cYes').addEventListener('click', () => {
+  if (pendingAccept) { setAccepted(pendingAccept.d, pendingAccept.id, true); ui.flash = pendingAccept.id; toast('Dado por hecho'); }
+  pendingAccept = null; cDlg.close(); render();
+});
+$('#cNo').addEventListener('click', () => { pendingAccept = null; cDlg.close(); });
+cDlg.addEventListener('click', (e) => { if (e.target === cDlg) { pendingAccept = null; cDlg.close(); } });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('amt')) e.target.blur();
+  if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('amt')) { e.preventDefault(); e.target.blur(); }
 });
 
 // Si la app queda abierta y cambia el día, se actualiza sola.
